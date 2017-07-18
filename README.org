@@ -1,0 +1,12 @@
+* Unscented Kalman Filter
+** Build
+- ~mkdir build~
+- ~cd build && cmake ..~
+- ~make~ and ~./UnscentedKF~
+
+** Dependencies
+- [[https://cmake.org/][cmake]]
+- [[https://github.com/uWebSockets/uWebSockets][uWebSocketIO]]
+- [[https://github.com/google/googletest][googletest]]
+- Eigen (included)
+- json (included)
