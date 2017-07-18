@@ -24,8 +24,9 @@ endif(${CMAKE_SYSTEM_NAME} MATCHES "Darwin")
 add_executable(UnscentedKF ${main} ${sources})
 target_link_libraries(UnscentedKF z ssl uv uWS)
 
+find_package(GTest)
 add_executable(test_main ${test_sources} ${sources})
-target_link_libraries(test_main gtest gmock)
+target_link_libraries(test_main GTest::GTest GTest::Main)
 
 enable_testing()
 ADD_TEST(ctest_build_test_code "${CMAKE_COMMAND}" --build ${CMAKE_BINARY_DIR} --target test_main)
