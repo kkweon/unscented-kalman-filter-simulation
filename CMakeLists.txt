@@ -3,7 +3,7 @@ project(UnscentedKF)
 cmake_minimum_required (VERSION 3.5)
 add_definitions(-std=c++14)
 
-set(CXX_FLAGS "-Wall")
+set(CXX_FLAGS "-Wall -Wextra")
 set(CMAKE_CXX_FLAGS, "${CXX_FLAGS}")
 set(sources src/ukf.cpp src/tools.cpp)
 set(main src/main.cpp)

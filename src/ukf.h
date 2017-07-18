@@ -1,18 +1,18 @@
 #ifndef UKF_H
 #define UKF_H
 
-#include "measurement_package.h"
 #include "Eigen/Dense"
-#include <vector>
-#include <string>
+#include "measurement_package.h"
+#include <exception>
 #include <fstream>
+#include <string>
+#include <vector>
 
 using Eigen::MatrixXd;
 using Eigen::VectorXd;
 
 class UKF {
 public:
-
   ///* initially set to false, set to true in first call of ProcessMeasurement
   bool is_initialized_;
 
@@ -53,7 +53,7 @@ public:
   double std_radphi_;
 
   ///* Radar measurement noise standard deviation radius change in m/s
-  double std_radrd_ ;
+  double std_radrd_;
 
   ///* Weights of sigma points
   VectorXd weights_;
@@ -66,7 +66,6 @@ public:
 
   ///* Sigma point spreading parameter
   double lambda_;
-
 
   /**
    * Constructor
@@ -102,6 +101,30 @@ public:
    * @param meas_package The measurement at k+1
    */
   void UpdateRadar(MeasurementPackage meas_package);
+
+  /**
+   * Generates (augmented) sigma points
+   * @return X_sig Matrix of shape (n_x, 2 * n_x + 1)
+   */
+  MatrixXd GenerateSigmaPoints();
+  MatrixXd GenerateAugmentedSigmaPoints();
+
+  MatrixXd PredictSigmaPoints(const MatrixXd &Xsig_aug, const double delta_t);
+  VectorXd PredictOneSigmaPoint(const VectorXd &sigma_point,
+                                const double delta_t);
+  template <typename T> inline T square(T val) { return val * val; };
+
+  VectorXd PredictMean(const MatrixXd &Xsig_pred);
+  MatrixXd PredictCovariance(const MatrixXd &Xsig_pred, const VectorXd &mean);
+
+  inline double normalize_PI(double val) {
+    while (val < -M_PI)
+      val += 2 * M_PI;
+    while (val > M_PI) {
+      val -= 2 * M_PI;
+    }
+    return val;
+  }
 };
 
 #endif /* UKF_H */
