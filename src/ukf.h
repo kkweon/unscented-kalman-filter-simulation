@@ -5,11 +5,21 @@
 #include "measurement_package.h"
 #include <exception>
 #include <fstream>
+#include <iostream>
 #include <string>
+#include <tuple>
 #include <vector>
+#include <cmath>
 
 using Eigen::MatrixXd;
 using Eigen::VectorXd;
+
+// For Debugging
+template <typename T> inline void print(T val, std::string name) {
+  std::cout << "===========================" << std::endl;
+  std::cout << "[" << name << "]" << std::endl;
+  std::cout << val << std::endl;
+}
 
 class UKF {
 public:
@@ -67,6 +77,13 @@ public:
   ///* Sigma point spreading parameter
   double lambda_;
 
+
+  // Normalized Innovation Squared (NIS)
+  double radar_NIS_;
+
+  // Normalized Innovation Squared (NIS)
+  double laser_NIS_;
+
   /**
    * Constructor
    */
@@ -109,22 +126,51 @@ public:
   MatrixXd GenerateSigmaPoints();
   MatrixXd GenerateAugmentedSigmaPoints();
 
+  /**
+   * Predicts sigma points
+   * @param Xsig_aug
+   * @param delta_t
+   * @return MatrixXd sigma_points
+   */
   MatrixXd PredictSigmaPoints(const MatrixXd &Xsig_aug, const double delta_t);
   VectorXd PredictOneSigmaPoint(const VectorXd &sigma_point,
                                 const double delta_t);
-  template <typename T> inline T square(T val) { return val * val; };
 
+  /**
+   * Returns a mean of sigma points
+   * @param Xsig_pred
+   * @return mean (n_x)
+   */
   VectorXd PredictMean(const MatrixXd &Xsig_pred);
+
+  /**
+   * Returnsa a covariance of sigma points
+   * @param Xsig_pred
+   * @param mean
+   * @return covariance (n_x, 2 * n_aug + 1)
+   */
   MatrixXd PredictCovariance(const MatrixXd &Xsig_pred, const VectorXd &mean);
 
-  inline double normalize_PI(double val) {
-    while (val < -M_PI)
-      val += 2 * M_PI;
-    while (val > M_PI) {
-      val -= 2 * M_PI;
+  /**
+   * Predicts Measurements
+   * @return tuple<z_predictions, S, Z_sigma_points> measurement prediction and covariance
+   */
+  std::tuple<VectorXd, MatrixXd, MatrixXd> PredictRadarMeasurement();
+  std::tuple<VectorXd, MatrixXd, MatrixXd> PredictLaserMeasurement();
+
+  /**
+   * Normalizes a PI to between -pi and pi
+   * @param theta
+   * @return normalized theta
+   */
+  inline double normalize_PI(double theta) {
+    if (-M_PI < theta && theta < M_PI) {
+      return theta;
     }
+    double val = theta - M_2_PI * std::floor((theta + M_PI) / M_2_PI);
     return val;
   }
+  template <typename T> inline T square(T val) { return val * val; };
 };
 
 #endif /* UKF_H */

@@ -1,4 +1,6 @@
+#include "tools.h"
 #include "ukf.h"
+#include <cmath>
 #include <exception>
 #include <gtest/gtest.h>
 
@@ -17,6 +19,126 @@ TEST(UKF, InitializeWithFirstLaserMeasurements) {
   ukf.ProcessMeasurement(measurements);
 
   ASSERT_TRUE(ukf.is_initialized_);
+
+  for (int i = 0; i < ukf.n_x_; ++i) {
+    ASSERT_EQ(ukf.P_(i, i), 1);
+  }
+}
+
+TEST(UKF, RunsOnlyLaserUpdate) {
+  UKF ukf;
+
+  vector<VectorXd> estimations;
+  vector<VectorXd> ground_truths;
+
+  for (int i = 0; i < 100; ++i) {
+    VectorXd true_location(2);
+    true_location << 20, 20;
+
+    MeasurementPackage measure;
+    measure.timestamp_ = i * 100;
+    measure.sensor_type_ = MeasurementPackage::LASER;
+    measure.raw_measurements_ = true_location + VectorXd::Random(2) * 0.001;
+    ukf.ProcessMeasurement(measure);
+
+    VectorXd predicted(2);
+    predicted << ukf.x_.head(2);
+    ASSERT_FALSE(std::isnan(predicted.sum()));
+
+    estimations.push_back(predicted);
+    ground_truths.push_back(true_location);
+  }
+
+  auto last_estimation = estimations[estimations.size() - 1];
+  auto last_truth = ground_truths[ground_truths.size() - 1];
+
+  auto diff = last_estimation - last_truth;
+
+  ASSERT_LE(diff.squaredNorm(), 1e-3);
+}
+
+TEST(UKF, ProcessTwiceThenGenerateAugmentedPrediction) {
+  UKF ukf;
+  MeasurementPackage pack1{0, MeasurementPackage::LASER, VectorXd::Zero(3)};
+  MeasurementPackage pack2{1, MeasurementPackage::LASER, VectorXd::Zero(2)};
+
+  ukf.ProcessMeasurement(pack1);
+  ukf.ProcessMeasurement(pack2);
+
+  ASSERT_NE(ukf.Xsig_pred_.sum(), 0);
+}
+
+TEST(UKF, PredictRadarMeasurement) {
+  UKF ukf;
+  int n_x = 5;
+  int n_aug = 7;
+
+  ukf.std_radr_ = 0.3;
+  ukf.std_radphi_ = 0.0175;
+  ukf.std_radrd_ = 0.1;
+
+  ukf.Xsig_pred_.setZero(n_x, 2 * n_aug + 1);
+  ukf.Xsig_pred_ << 5.9374, 6.0640, 5.925, 5.9436, 5.9266, 5.9374, 5.9389,
+      5.9374, 5.8106, 5.9457, 5.9310, 5.9465, 5.9374, 5.9359, 5.93744, 1.48,
+      1.4436, 1.660, 1.4934, 1.5036, 1.48, 1.4868, 1.48, 1.5271, 1.3104, 1.4787,
+      1.4674, 1.48, 1.4851, 1.486, 2.204, 2.2841, 2.2455, 2.2958, 2.204, 2.204,
+      2.2395, 2.204, 2.1256, 2.1642, 2.1139, 2.204, 2.204, 2.1702, 2.2049,
+      0.5367, 0.47338, 0.67809, 0.55455, 0.64364, 0.54337, 0.5367, 0.53851,
+      0.60017, 0.39546, 0.51900, 0.42991, 0.530188, 0.5367, 0.535048, 0.352,
+      0.29997, 0.46212, 0.37633, 0.4841, 0.41872, 0.352, 0.38744, 0.40562,
+      0.24347, 0.32926, 0.2214, 0.28687, 0.352, 0.318159;
+
+  VectorXd z_pred;
+  MatrixXd S_;
+  MatrixXd Z_sig;
+  std::tie(z_pred, S_, Z_sig) = ukf.PredictRadarMeasurement();
+
+  VectorXd z_pred_expected(3);
+  z_pred_expected << 6.12155, 0.245993, 2.10313;
+  MatrixXd S_expected(3, 3);
+  S_expected << 0.0946171, -0.000139448, 0.00407016, -0.000139448, 0.000617548,
+      -0.000770652, 0.00407016, -0.000770652, 0.0180917;
+
+  auto z_diff = z_pred - z_pred_expected;
+  ASSERT_LE(z_diff.squaredNorm(), 1e-4);
+
+  auto S_diff = S_ - S_expected;
+  ASSERT_LE(S_diff.squaredNorm(), 1e-4);
+}
+
+TEST(UKF, PredictLaserMeasurement) {
+  UKF ukf;
+  int n_x = ukf.n_x_;
+  int n_aug = ukf.n_aug_;
+  int n_z = 2;
+
+  ukf.Xsig_pred_.setZero(n_x, 2 * n_aug + 1);
+
+  ukf.Xsig_pred_ << 5.9374, 6.0640, 5.925, 5.9436, 5.9266, 5.9374, 5.9389,
+      5.9374, 5.8106, 5.9457, 5.9310, 5.9465, 5.9374, 5.9359, 5.93744, 1.48,
+      1.4436, 1.660, 1.4934, 1.5036, 1.48, 1.4868, 1.48, 1.5271, 1.3104, 1.4787,
+      1.4674, 1.48, 1.4851, 1.486, 2.204, 2.2841, 2.2455, 2.2958, 2.204, 2.204,
+      2.2395, 2.204, 2.1256, 2.1642, 2.1139, 2.204, 2.204, 2.1702, 2.2049,
+      0.5367, 0.47338, 0.67809, 0.55455, 0.64364, 0.54337, 0.5367, 0.53851,
+      0.60017, 0.39546, 0.51900, 0.42991, 0.530188, 0.5367, 0.535048, 0.352,
+      0.29997, 0.46212, 0.37633, 0.4841, 0.41872, 0.352, 0.38744, 0.40562,
+      0.24347, 0.32926, 0.2214, 0.28687, 0.352, 0.318159;
+
+  VectorXd z_pred_expected = VectorXd::Zero(n_z);
+  z_pred_expected << 5.93637333, 1.49035;
+  MatrixXd S_pred_expected = MatrixXd::Zero(n_z, n_z);
+  S_pred_expected << -198.7475958, -49.62922112, -49.62922112, -12.36854358;
+  S_pred_expected << 0.02793425, -0.0024053, -0.0024053, 0.033345;
+
+  VectorXd z_pred;
+  MatrixXd S_pred;
+  MatrixXd Z_sig;
+  std::tie(z_pred, S_pred, Z_sig) = ukf.PredictLaserMeasurement();
+  auto z_diff = z_pred - z_pred_expected;
+  auto S_diff = S_pred - S_pred_expected;
+
+  ASSERT_LE(z_diff.squaredNorm(), 1e-4);
+  ASSERT_LE(S_diff.squaredNorm(), 1e-4);
 }
 
 TEST(UKF, ThrowsWhenNoSensorIsOn) {
@@ -83,11 +205,98 @@ TEST(UKF, CanGenerateAugmentedSigmaPoints) {
 
   ASSERT_EQ(Xsig_aug.rows(), Xsig_aug_expected.rows());
   ASSERT_EQ(Xsig_aug.cols(), Xsig_aug_expected.cols());
+
   for (int row = 0; row < Xsig_aug.rows(); ++row) {
     for (int col = 0; col < Xsig_aug.cols(); ++col) {
-      ASSERT_NEAR(Xsig_aug(row, col), Xsig_aug_expected(row, col), 1e-4) << "Row: " <<  row << ", Col: " << col;
+      ASSERT_NEAR(Xsig_aug(row, col), Xsig_aug_expected(row, col), 1e-4)
+          << "Row: " << row << ", Col: " << col;
     }
   }
+}
+
+TEST(UKF, UpdateRadarMeasurements) {
+  int n_x = 5;
+  int n_aug = 7;
+  UKF ukf;
+  ukf.Xsig_pred_ = MatrixXd::Zero(n_x, 2 * n_aug + 1);
+  ukf.Xsig_pred_ << 5.9374, 6.0640, 5.925, 5.9436, 5.9266, 5.9374, 5.9389,
+      5.9374, 5.8106, 5.9457, 5.9310, 5.9465, 5.9374, 5.9359, 5.93744, 1.48,
+      1.4436, 1.660, 1.4934, 1.5036, 1.48, 1.4868, 1.48, 1.5271, 1.3104, 1.4787,
+      1.4674, 1.48, 1.4851, 1.486, 2.204, 2.2841, 2.2455, 2.2958, 2.204, 2.204,
+      2.2395, 2.204, 2.1256, 2.1642, 2.1139, 2.204, 2.204, 2.1702, 2.2049,
+      0.5367, 0.47338, 0.67809, 0.55455, 0.64364, 0.54337, 0.5367, 0.53851,
+      0.60017, 0.39546, 0.51900, 0.42991, 0.530188, 0.5367, 0.535048, 0.352,
+      0.29997, 0.46212, 0.37633, 0.4841, 0.41872, 0.352, 0.38744, 0.40562,
+      0.24347, 0.32926, 0.2214, 0.28687, 0.352, 0.318159;
+
+  ukf.x_ << 5.93637, 1.49035, 2.20528, 0.536853, 0.353577;
+  ukf.P_ << 0.0054342, -0.002405, 0.0034157, -0.0034819, -0.00299378, -0.002405,
+      0.01084, 0.001492, 0.0098018, 0.00791091, 0.0034157, 0.001492, 0.0058012,
+      0.00077863, 0.000792973, -0.0034819, 0.0098018, 0.00077863, 0.011923,
+      0.0112491, -0.0029937, 0.0079109, 0.00079297, 0.011249, 0.0126972;
+
+  MeasurementPackage measurement;
+  measurement.sensor_type_ = MeasurementPackage::RADAR;
+  measurement.raw_measurements_ = VectorXd::Zero(3);
+  measurement.raw_measurements_ << 5.9214, // rho in m
+      0.2187,                              // phi in rad
+      2.0062;                              // rho_dot in m/s
+
+  ukf.UpdateRadar(measurement);
+
+  VectorXd x_expected = VectorXd::Zero(n_x);
+  x_expected << 5.92276, 1.41823, 2.15593, 0.489274, 0.321338;
+  MatrixXd P_expected = MatrixXd::Zero(n_x, n_x);
+  P_expected << 0.00361579, -0.000357881, 0.00208316, -0.000937196, -0.00071727,
+      -0.000357881, 0.00539867, 0.00156846, 0.00455342, 0.00358885, 0.00208316,
+      0.00156846, 0.00410651, 0.00160333, 0.00171811, -0.000937196, 0.00455342,
+      0.00160333, 0.00652634, 0.00669436, -0.00071719, 0.00358884, 0.00171811,
+      0.00669426, 0.00881797;
+
+  auto x_diff = ukf.x_ - x_expected;
+  auto P_diff = ukf.P_ - P_expected;
+
+  ASSERT_LE(x_diff.squaredNorm(), 1e-2);
+  ASSERT_LE(P_diff.squaredNorm(), 1e-2);
+}
+
+TEST(UKF, UpdateLidarMeasurement) {
+  int n_x = 5;
+  int n_aug = 7;
+  UKF ukf;
+  ukf.Xsig_pred_ = MatrixXd::Zero(n_x, 2 * n_aug + 1);
+  ukf.Xsig_pred_ << 5.9374, 6.0640, 5.925, 5.9436, 5.9266, 5.9374, 5.9389,
+      5.9374, 5.8106, 5.9457, 5.9310, 5.9465, 5.9374, 5.9359, 5.93744, 1.48,
+      1.4436, 1.660, 1.4934, 1.5036, 1.48, 1.4868, 1.48, 1.5271, 1.3104, 1.4787,
+      1.4674, 1.48, 1.4851, 1.486, 2.204, 2.2841, 2.2455, 2.2958, 2.204, 2.204,
+      2.2395, 2.204, 2.1256, 2.1642, 2.1139, 2.204, 2.204, 2.1702, 2.2049,
+      0.5367, 0.47338, 0.67809, 0.55455, 0.64364, 0.54337, 0.5367, 0.53851,
+      0.60017, 0.39546, 0.51900, 0.42991, 0.530188, 0.5367, 0.535048, 0.352,
+      0.29997, 0.46212, 0.37633, 0.4841, 0.41872, 0.352, 0.38744, 0.40562,
+      0.24347, 0.32926, 0.2214, 0.28687, 0.352, 0.318159;
+
+  ukf.x_ << 5.93637, 1.49035, 2.20528, 0.536853, 0.353577;
+  ukf.P_ << 0.0054342, -0.002405, 0.0034157, -0.0034819, -0.00299378, -0.002405,
+      0.01084, 0.001492, 0.0098018, 0.00791091, 0.0034157, 0.001492, 0.0058012,
+      0.00077863, 0.000792973, -0.0034819, 0.0098018, 0.00077863, 0.011923,
+      0.0112491, -0.0029937, 0.0079109, 0.00079297, 0.011249, 0.0126972;
+
+  MeasurementPackage meas_package;
+  meas_package.sensor_type_ = MeasurementPackage::LASER;
+  meas_package.raw_measurements_ = VectorXd::Zero(2);
+  meas_package.raw_measurements_ << 100, 100;
+
+  VectorXd diff_before = ukf.x_.head(2) - meas_package.raw_measurements_;
+  for (int i = 0; i < 5; ++i) {
+    ukf.Xsig_pred_ = ukf.GenerateAugmentedSigmaPoints();
+    ukf.Xsig_pred_ = ukf.PredictSigmaPoints(ukf.Xsig_pred_, 0.1);
+    ukf.x_ = ukf.PredictMean(ukf.Xsig_pred_);
+    ukf.P_ = ukf.PredictCovariance(ukf.Xsig_pred_, ukf.x_);
+    ukf.UpdateLidar(meas_package);
+  }
+  VectorXd diff_after = ukf.x_.head(2) - meas_package.raw_measurements_;
+
+  ASSERT_GT(diff_before.squaredNorm(), diff_after.squaredNorm());
 }
 
 TEST(UKF, PredictsSigmaPoints) {

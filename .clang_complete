@@ -1,3 +1,5 @@
 -Isrc
 -I/usr/local/include
+-I/usr/include/c++/6
+-I/usr/include
 -Itests

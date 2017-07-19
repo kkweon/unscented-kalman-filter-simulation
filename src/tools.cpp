@@ -19,7 +19,7 @@ VectorXd Tools::CalculateRMSE(const vector<VectorXd> &estimations,
   VectorXd RMSE(n_dim);
   RMSE.setZero();
 
-  for (int i = 0; i < estimations.size(); ++i) {
+  for (auto i = 0; i < estimations.size(); ++i) {
     VectorXd diff = estimations[i] - ground_truth[i];
     VectorXd diff_sq = diff.array().square();
     RMSE += diff_sq;

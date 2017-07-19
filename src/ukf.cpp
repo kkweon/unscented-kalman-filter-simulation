@@ -1,5 +1,6 @@
 #include "ukf.h"
 #include <iostream>
+#define assert_is_not_nan(x) assert(!std::isnan(x))
 
 using namespace std;
 using Eigen::MatrixXd;
@@ -23,10 +24,12 @@ UKF::UKF() {
   P_ = MatrixXd(5, 5);
 
   // Process noise standard deviation longitudinal acceleration in m/s^2
-  std_a_ = 30;
+  // Should be less than 5.991
+  std_a_ = 0.5;
 
   // Process noise standard deviation yaw acceleration in rad/s^2
-  std_yawdd_ = 30;
+  // Should be less than 7.8
+  std_yawdd_ = 0.5;
 
   // Laser measurement noise standard deviation position1 in m
   std_laspx_ = 0.15;
@@ -43,37 +46,32 @@ UKF::UKF() {
   // Radar measurement noise standard deviation radius change in m/s
   std_radrd_ = 0.3;
 
-  /**
-  TODO:
-
-  Complete the initialization. See ukf.h for other member properties.
-
-  Hint: one or more values initialized above might be wildly off...
-  */
+  // Initialization
   n_x_ = 5;
   n_aug_ = 7;
   is_initialized_ = false;
+  Xsig_pred_.setZero();
+  lambda_ = 3 - n_aug_;
+
+  // This weights will be used to compute mean and covariance
+  double w1 = lambda_ / (lambda_ + n_aug_);
+  double w2 = 0.5 / (lambda_ + n_aug_);
+  weights_.setZero(2 * n_aug_ + 1);
+  weights_.setConstant(w2);
+  weights_(0) = w1;
 }
 
 UKF::~UKF() {}
 
 /**
- * @param {MeasurementPackage} meas_package The latest measurement data of
- * either radar or laser.
+ * Main function will call this
  */
 void UKF::ProcessMeasurement(MeasurementPackage meas_package) {
-  /**
-  TODO:
-
-  Complete this function! Make sure you switch between lidar and radar
-  measurements.
-  */
-
   if (!is_initialized_) {
     double px, py, v, psi, psi_dot;
 
     if (use_laser_ && meas_package.sensor_type_ == MeasurementPackage::LASER) {
-      // LIDAR
+      // IF LIDAR, only positions
       px = meas_package.raw_measurements_[0];
       py = meas_package.raw_measurements_[1];
       v = 0;
@@ -82,7 +80,10 @@ void UKF::ProcessMeasurement(MeasurementPackage meas_package) {
 
     } else if (use_radar_ &&
                meas_package.sensor_type_ == MeasurementPackage::RADAR) {
-      // RADAR
+      // IF RADAR, except psi_dot
+      // rho : angle
+      // v : velocity
+      // rho_dot : change of angle
       double rho = meas_package.raw_measurements_[0];
       double phi = meas_package.raw_measurements_[1];
       double rho_dot = meas_package.raw_measurements_[2];
@@ -99,6 +100,9 @@ void UKF::ProcessMeasurement(MeasurementPackage meas_package) {
           sqrt(-(square(px) + square(py)) * (rho_dot - v) * (rho_dot + v));
       auto denominator = px * v + rho_dot * sqrt(square(px) + square(py));
 
+      if (fabs(denominator) < 1e-7) {
+        denominator = 1e-3;
+      }
       auto possible_psi1_before_atan = (py * v - numerator_term) / denominator;
       auto possible_psi2_before_atan = (py * v + numerator_term) / denominator;
       auto possible_psi1 = 2 * atan(possible_psi1_before_atan);
@@ -109,65 +113,212 @@ void UKF::ProcessMeasurement(MeasurementPackage meas_package) {
       psi_dot = 0;
 
     } else {
-      throw std::invalid_argument("You cannot turn off both Laser and Radar");
+      throw std::invalid_argument("You cannot turn off both LASER and RADAR");
     }
-
     x_ << px, py, v, psi, psi_dot;
+    assert(!std::isnan(x_.sum()));
+    P_.diagonal().setOnes() * 100;
 
     time_us_ = meas_package.timestamp_;
     is_initialized_ = true;
+
+    return;
+  } // !is_initialized
+
+  double delta_t = (meas_package.timestamp_ - time_us_) / 1'000'000.0;
+  if (fabs(delta_t) < 1e-7) {
+    delta_t = 1e-3;
   }
+  Prediction(delta_t);
+  assert(!std::isnan(x_.sum()));
+
+  if (use_laser_ && meas_package.sensor_type_ == MeasurementPackage::LASER) {
+    UpdateLidar(meas_package);
+    assert(!std::isnan(x_.sum()));
+
+  } else if (use_radar_ &&
+             meas_package.sensor_type_ == MeasurementPackage::RADAR) {
+    UpdateRadar(meas_package);
+    assert(!std::isnan(x_.sum()));
+
+  } else {
+    throw std::invalid_argument("You cannot turn off both LASER and RADAR");
+  }
+
+  time_us_ = meas_package.timestamp_;
 }
 
-/**
- * Predicts sigma points, the state, and the state covariance matrix.
- * @param {double} delta_t the change in time (in seconds) between the last
- * measurement and this one.
- */
+// 1. Generates Augmented Sigma Points
+// 2. Predicts using the sigma points
+// 3. Compute Mean and Covariance
 void UKF::Prediction(double delta_t) {
-  /**
-  TODO:
 
-  Complete this function! Estimate the object's location. Modify the state
-  vector, x_. Predict sigma points, the state, and the state covariance
-  matrix.
-  */
+  Xsig_pred_ = GenerateAugmentedSigmaPoints();
+  assert(!std::isnan(Xsig_pred_.sum()));
+  Xsig_pred_ = PredictSigmaPoints(Xsig_pred_, delta_t);
+  assert(!std::isnan(Xsig_pred_.sum()));
+
+  x_ = PredictMean(Xsig_pred_);
+  assert(!std::isnan(x_.sum()));
+
+  P_ = PredictCovariance(Xsig_pred_, x_);
+  assert(!std::isnan(x_.sum()));
+  assert(!std::isnan(P_.sum()));
 }
 
-/**
- * Updates the state and the state covariance matrix using a laser
- * measurement.
- * @param {MeasurementPackage} meas_package
- */
+// 1. Predict Radar measurements
+// 2. Returns measurement prediction (z_pred)
+// 3. Returns measurement covariance (S)
+// 4. Returns measurement sigma points (z_sig)
+std::tuple<VectorXd, MatrixXd, MatrixXd> UKF::PredictRadarMeasurement() {
+  int n_z = 3;
+
+  VectorXd z_ = VectorXd::Zero(n_z);
+  MatrixXd S_ = MatrixXd::Zero(n_z, n_z);
+  MatrixXd z_sig = MatrixXd::Zero(n_z, 2 * n_aug_ + 1);
+
+  for (int i = 0; i < 2 * n_aug_ + 1; ++i) {
+    double px = Xsig_pred_(0, i);
+    double py = Xsig_pred_(1, i);
+    double v = Xsig_pred_(2, i);
+    double psi = Xsig_pred_(3, i);
+
+    double v1 = cos(psi) * v;
+    double v2 = sin(psi) * v;
+
+    // rho
+    z_sig(0, i) = sqrt(square(px) + square(py));
+    // psi
+    z_sig(1, i) = atan2(py, px);
+    // rho_dot
+    z_sig(2, i) = (px * v1 + py * v2) / z_sig(0, i);
+  }
+
+  z_ = z_sig * weights_;
+
+  for (int i = 0; i < 2 * n_aug_ + 1; ++i) {
+    VectorXd z_diff = z_sig.col(i) - z_;
+
+    // fix psi angle
+    z_diff(1) = normalize_PI(z_diff(1));
+
+    S_ = S_ + weights_(i) * z_diff * z_diff.transpose();
+  }
+  MatrixXd R = MatrixXd::Zero(n_z, n_z);
+  R(0, 0) = square(std_radr_);
+  R(1, 1) = square(std_radphi_);
+  R(2, 2) = square(std_radrd_);
+  S_ += R;
+
+  return std::make_tuple(z_, S_, z_sig);
+}
+
+// Similar to PredictRadarMeasurement
+std::tuple<VectorXd, MatrixXd, MatrixXd> UKF::PredictLaserMeasurement() {
+  int n_z = 2;
+  VectorXd z_ = VectorXd::Zero(n_z);
+  MatrixXd S_ = MatrixXd::Zero(n_z, n_z);
+
+  MatrixXd z_sig(n_z, 2 * n_aug_ + 1);
+
+  z_sig = Xsig_pred_.topRows(n_z);
+  z_ = z_sig * weights_;
+
+  MatrixXd diff = z_sig.colwise() - z_;
+  MatrixXd weighted_diff =
+      diff.array().rowwise() * weights_.transpose().array();
+
+  S_ = weighted_diff * diff.transpose();
+
+  MatrixXd R = MatrixXd::Zero(n_z, n_z);
+  R(0, 0) = square(std_laspx_);
+  R(1, 1) = square(std_laspy_);
+  S_ += R;
+
+  return std::make_tuple(z_, S_, z_sig);
+}
+
 void UKF::UpdateLidar(MeasurementPackage meas_package) {
   /**
-  TODO:
-
-  Complete this function! Use lidar data to update the belief about the
-  object's
-  position. Modify the state vector, x_, and covariance, P_.
-
-  You'll also need to calculate the lidar NIS.
+     1) Compute T
+     2) Compute K
+     3) Update x_ and P_
   */
+  VectorXd z_pred;
+  MatrixXd S_;
+  MatrixXd z_sig;
+  std::tie(z_pred, S_, z_sig) = PredictLaserMeasurement();
+
+  // Compute T
+  MatrixXd X_diff = Xsig_pred_.colwise() - x_;
+  MatrixXd Z_diff = z_sig.colwise() - z_pred;
+
+  MatrixXd weighted_X_diff =
+      X_diff.array().rowwise() * weights_.transpose().array();
+  MatrixXd T = weighted_X_diff * Z_diff.transpose();
+
+  MatrixXd K = T * S_.inverse();
+  VectorXd z_diff = meas_package.raw_measurements_ - z_pred;
+
+  x_ = x_ + K * z_diff;
+  P_ = P_ - K * S_ * K.transpose();
+
+  laser_NIS_ = z_diff.transpose() * S_.inverse() * z_diff;
+
+  assert_is_not_nan(P_.sum());
+  assert_is_not_nan(x_.sum());
 }
 
-/**
- * Updates the state and the state covariance matrix using a radar
- * measurement.
- * @param {MeasurementPackage} meas_package
- */
 void UKF::UpdateRadar(MeasurementPackage meas_package) {
   /**
-  TODO:
-
-  Complete this function! Use radar data to update the belief about the
-  object's
-  position. Modify the state vector, x_, and covariance, P_.
-
-  You'll also need to calculate the radar NIS.
+     1) Compute T
+     2) Compute K
+     3) Update x_ and P_
   */
+  VectorXd z_pred;
+  MatrixXd S_;
+  MatrixXd z_sig;
+  std::tie(z_pred, S_, z_sig) = PredictRadarMeasurement();
+
+  // Compute T
+  MatrixXd X_diff = Xsig_pred_.colwise() - x_;
+  MatrixXd Z_diff = z_sig.colwise() - z_pred;
+  for (auto i = 0; i < Z_diff.cols(); ++i) {
+    // yaw
+    Z_diff(1, i) = normalize_PI(Z_diff(1, i));
+    // yaw
+    X_diff(3, i) = normalize_PI(X_diff(3, i));
+  }
+
+  MatrixXd weighted_X_diff =
+      X_diff.array().rowwise() * weights_.transpose().array();
+  MatrixXd T = weighted_X_diff * Z_diff.transpose();
+
+  MatrixXd K = T * S_.inverse();
+  VectorXd z_diff = meas_package.raw_measurements_ - z_pred;
+  // angle normalization
+  z_diff(1) = normalize_PI(z_diff(1));
+
+  x_ = x_ + K * z_diff;
+  P_ = P_ - K * S_ * K.transpose();
+
+  if (std::isnan(P_.sum())) {
+    print(P_, "P_");
+  }
+
+  assert_is_not_nan(T.sum());
+  assert_is_not_nan(K.sum());
+  assert_is_not_nan(z_diff.sum());
+  assert_is_not_nan(X_diff.sum());
+  assert_is_not_nan(Z_diff.sum());
+
+  assert_is_not_nan(x_.sum());
+  assert_is_not_nan(P_.sum());
+
+  radar_NIS_ = z_diff.transpose() * S_.inverse() * z_diff;
 }
 
+// Generates unaugmented sigma points
 MatrixXd UKF::GenerateSigmaPoints() {
   // X_sig = [x, x + sqrt((lambda + n_x) * P), x - sqrt((lambda + n_x) * P)]
   MatrixXd X_sig(n_x_, 2 * n_x_ + 1);
@@ -184,13 +335,14 @@ MatrixXd UKF::GenerateSigmaPoints() {
   return X_sig;
 }
 
+// Generates augmented sigma points
 MatrixXd UKF::GenerateAugmentedSigmaPoints() {
   MatrixXd Xsig_aug(n_aug_, 2 * n_aug_ + 1);
   Xsig_aug.setZero();
-  lambda_ = 3 - n_aug_;
 
   VectorXd x_aug(n_aug_);
   MatrixXd P_aug(n_aug_, n_aug_);
+  P_aug.setZero();
 
   x_aug.setZero();
   x_aug.head(n_x_) = x_;
@@ -204,13 +356,23 @@ MatrixXd UKF::GenerateAugmentedSigmaPoints() {
   P_aug.bottomRightCorner(n_new, n_new) = Q;
 
   MatrixXd sqrt_P_aug = P_aug.llt().matrixL();
+
+  if (std::isnan(sqrt_P_aug.sum())) {
+    print(P_aug, "P_aug");
+    print(sqrt_P_aug, "sqrt_P_aug");
+  }
+
+  assert_is_not_nan(sqrt_P_aug.sum());
   MatrixXd sqrt_term = sqrt(lambda_ + n_aug_) * sqrt_P_aug;
+  assert_is_not_nan(sqrt_term.sum());
 
   Xsig_aug.col(0) = x_aug;
 
   for (int i = 0; i < n_aug_; ++i) {
     Xsig_aug.col(i + 1) = x_aug + sqrt_term.col(i);
     Xsig_aug.col(i + n_aug_ + 1) = x_aug - sqrt_term.col(i);
+
+    assert_is_not_nan(Xsig_aug.sum());
   }
 
   return Xsig_aug;
@@ -218,6 +380,10 @@ MatrixXd UKF::GenerateAugmentedSigmaPoints() {
 
 MatrixXd UKF::PredictSigmaPoints(const MatrixXd &Xsig_aug,
                                  const double delta_t) {
+  // Returns:
+  //     SigmaPoints (2-D Array): shape (n_x, 2 * n_aug + 1);
+  assert(!std::isnan(delta_t));
+  assert(!std::isnan(Xsig_aug.sum()));
   MatrixXd result(n_x_, 2 * n_aug_ + 1);
 
   for (int i = 0; i < 2 * n_aug_ + 1; ++i) {
@@ -230,7 +396,10 @@ MatrixXd UKF::PredictSigmaPoints(const MatrixXd &Xsig_aug,
 VectorXd UKF::PredictOneSigmaPoint(const VectorXd &sigma_point,
                                    const double delta_t) {
 
+  assert(!std::isnan(sigma_point.sum()));
+
   if (sigma_point.size() == 7) {
+
     double px = sigma_point(0);
     double py = sigma_point(1);
     double v = sigma_point(2);
@@ -241,11 +410,13 @@ VectorXd UKF::PredictOneSigmaPoint(const VectorXd &sigma_point,
 
     VectorXd x(5);
 
-    if (psi_dot != 0) {
+    if (fabs(psi_dot) > 1e-2) {
+
       x(0) = px + v / psi_dot * (sin(psi + psi_dot * delta_t) - sin(psi)) +
              0.5 * square(delta_t) * cos(psi) * nu_a;
       x(1) = py + v / psi_dot * (-cos(psi + psi_dot * delta_t) + cos(psi)) +
              0.5 * square(delta_t) * sin(psi) * nu_a;
+
     } else {
       x(0) = px + v * (v * cos(psi) * delta_t) +
              0.5 * square(delta_t) * cos(psi) * nu_a;
@@ -264,20 +435,17 @@ VectorXd UKF::PredictOneSigmaPoint(const VectorXd &sigma_point,
 }
 
 VectorXd UKF::PredictMean(const MatrixXd &Xsig_pred) {
-  lambda_ = 3 - n_aug_;
-  VectorXd weights(2 * n_aug_ + 1);
-  double w1 = lambda_ / (lambda_ + n_aug_);
-  double w2 = 1 / (2 * (lambda_ + n_aug_));
-  weights.setConstant(w2);
-  weights(0) = w1;
-
-  return Xsig_pred * weights;
+  // Returns:
+  //     mean (1-D Array): shape (n_x,);
+  assert(!std::isnan(Xsig_pred.sum()));
+  return Xsig_pred * weights_;
 }
 
 MatrixXd UKF::PredictCovariance(const MatrixXd &Xsig_pred,
                                 const VectorXd &mean) {
   // Xsig_pred (2-D Array): shape (n_x, 2 * n_aug + 1)
-
+  // Returns:
+  //     P_x (2-D Array): shape (n_x, 2 * n_aug + 1);
   if (mean.size() != Xsig_pred.rows()) {
     throw std::invalid_argument("Wrong size mean");
   }
