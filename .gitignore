@@ -3,3 +3,13 @@
 
 # build files
 build/
+
+# Jetbrain
+.idea
+
+GPATH
+GRTAGS
+GSYMS
+GTAGS
+cmake-build-debug
+
