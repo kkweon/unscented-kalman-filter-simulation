@@ -84,6 +84,9 @@ public:
   // Normalized Innovation Squared (NIS)
   double laser_NIS_;
 
+  VectorXd backup_x_;
+  MatrixXd backup_P_;
+
   /**
    * Constructor
    */
@@ -171,6 +174,8 @@ public:
     return val;
   }
   template <typename T> inline T square(T val) { return val * val; };
+  bool is_unstable();
+
 };
 
 #endif /* UKF_H */

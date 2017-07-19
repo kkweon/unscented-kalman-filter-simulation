@@ -132,9 +132,6 @@ int main() {
           std::cout << "LASER_NIS: " << ukf.laser_NIS_ << "\n";
           std::cout << "RADAR_NIS: " << ukf.radar_NIS_ << "\n";
 
-
-          assert(!std::isnan(RMSE.sum()));
-
           json msgJson;
           msgJson["estimate_x"] = p_x;
           msgJson["estimate_y"] = p_y;

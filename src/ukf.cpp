@@ -1,6 +1,5 @@
 #include "ukf.h"
 #include <iostream>
-#define assert_is_not_nan(x) assert(!std::isnan(x))
 
 using namespace std;
 using Eigen::MatrixXd;
@@ -96,53 +95,44 @@ void UKF::ProcessMeasurement(MeasurementPackage meas_package) {
 
       v = sqrt(square(vx) + square(vy));
 
-      auto numerator_term =
-          sqrt(-(square(px) + square(py)) * (rho_dot - v) * (rho_dot + v));
-      auto denominator = px * v + rho_dot * sqrt(square(px) + square(py));
-
-      if (fabs(denominator) < 1e-7) {
-        denominator = 1e-3;
-      }
-      auto possible_psi1_before_atan = (py * v - numerator_term) / denominator;
-      auto possible_psi2_before_atan = (py * v + numerator_term) / denominator;
-      auto possible_psi1 = 2 * atan(possible_psi1_before_atan);
-      possible_psi1 = normalize_PI(possible_psi1);
-      auto possible_psi2 = 2 * atan(possible_psi2_before_atan);
-      possible_psi2 = normalize_PI(possible_psi2);
-      psi = fmin(fabs(possible_psi1), fabs(possible_psi2));
+      psi = 0;
       psi_dot = 0;
 
     } else {
       throw std::invalid_argument("You cannot turn off both LASER and RADAR");
     }
     x_ << px, py, v, psi, psi_dot;
-    assert(!std::isnan(x_.sum()));
-    P_.diagonal().setOnes() * 100;
+    P_.setIdentity();
 
     time_us_ = meas_package.timestamp_;
     is_initialized_ = true;
+
+    backup_x_ = x_;
+    backup_P_ = P_;
 
     return;
   } // !is_initialized
 
   double delta_t = (meas_package.timestamp_ - time_us_) / 1'000'000.0;
-  if (fabs(delta_t) < 1e-7) {
-    delta_t = 1e-3;
-  }
   Prediction(delta_t);
-  assert(!std::isnan(x_.sum()));
 
   if (use_laser_ && meas_package.sensor_type_ == MeasurementPackage::LASER) {
     UpdateLidar(meas_package);
-    assert(!std::isnan(x_.sum()));
 
   } else if (use_radar_ &&
              meas_package.sensor_type_ == MeasurementPackage::RADAR) {
     UpdateRadar(meas_package);
-    assert(!std::isnan(x_.sum()));
 
   } else {
     throw std::invalid_argument("You cannot turn off both LASER and RADAR");
+  }
+  if (is_unstable()) {
+    is_initialized_ = false;
+    x_ = backup_x_;
+    P_ = backup_P_;
+  } else {
+    backup_x_ = x_;
+    backup_P_ = P_;
   }
 
   time_us_ = meas_package.timestamp_;
@@ -154,16 +144,14 @@ void UKF::ProcessMeasurement(MeasurementPackage meas_package) {
 void UKF::Prediction(double delta_t) {
 
   Xsig_pred_ = GenerateAugmentedSigmaPoints();
-  assert(!std::isnan(Xsig_pred_.sum()));
   Xsig_pred_ = PredictSigmaPoints(Xsig_pred_, delta_t);
-  assert(!std::isnan(Xsig_pred_.sum()));
 
   x_ = PredictMean(Xsig_pred_);
-  assert(!std::isnan(x_.sum()));
-
   P_ = PredictCovariance(Xsig_pred_, x_);
-  assert(!std::isnan(x_.sum()));
-  assert(!std::isnan(P_.sum()));
+
+  if (!(std::isfinite(x_.sum()) && std::isfinite(P_.sum()))) {
+    is_initialized_ = false;
+  }
 }
 
 // 1. Predict Radar measurements
@@ -264,9 +252,6 @@ void UKF::UpdateLidar(MeasurementPackage meas_package) {
   P_ = P_ - K * S_ * K.transpose();
 
   laser_NIS_ = z_diff.transpose() * S_.inverse() * z_diff;
-
-  assert_is_not_nan(P_.sum());
-  assert_is_not_nan(x_.sum());
 }
 
 void UKF::UpdateRadar(MeasurementPackage meas_package) {
@@ -301,19 +286,6 @@ void UKF::UpdateRadar(MeasurementPackage meas_package) {
 
   x_ = x_ + K * z_diff;
   P_ = P_ - K * S_ * K.transpose();
-
-  if (std::isnan(P_.sum())) {
-    print(P_, "P_");
-  }
-
-  assert_is_not_nan(T.sum());
-  assert_is_not_nan(K.sum());
-  assert_is_not_nan(z_diff.sum());
-  assert_is_not_nan(X_diff.sum());
-  assert_is_not_nan(Z_diff.sum());
-
-  assert_is_not_nan(x_.sum());
-  assert_is_not_nan(P_.sum());
 
   radar_NIS_ = z_diff.transpose() * S_.inverse() * z_diff;
 }
@@ -362,9 +334,7 @@ MatrixXd UKF::GenerateAugmentedSigmaPoints() {
     print(sqrt_P_aug, "sqrt_P_aug");
   }
 
-  assert_is_not_nan(sqrt_P_aug.sum());
   MatrixXd sqrt_term = sqrt(lambda_ + n_aug_) * sqrt_P_aug;
-  assert_is_not_nan(sqrt_term.sum());
 
   Xsig_aug.col(0) = x_aug;
 
@@ -372,7 +342,6 @@ MatrixXd UKF::GenerateAugmentedSigmaPoints() {
     Xsig_aug.col(i + 1) = x_aug + sqrt_term.col(i);
     Xsig_aug.col(i + n_aug_ + 1) = x_aug - sqrt_term.col(i);
 
-    assert_is_not_nan(Xsig_aug.sum());
   }
 
   return Xsig_aug;
@@ -382,8 +351,6 @@ MatrixXd UKF::PredictSigmaPoints(const MatrixXd &Xsig_aug,
                                  const double delta_t) {
   // Returns:
   //     SigmaPoints (2-D Array): shape (n_x, 2 * n_aug + 1);
-  assert(!std::isnan(delta_t));
-  assert(!std::isnan(Xsig_aug.sum()));
   MatrixXd result(n_x_, 2 * n_aug_ + 1);
 
   for (int i = 0; i < 2 * n_aug_ + 1; ++i) {
@@ -396,7 +363,6 @@ MatrixXd UKF::PredictSigmaPoints(const MatrixXd &Xsig_aug,
 VectorXd UKF::PredictOneSigmaPoint(const VectorXd &sigma_point,
                                    const double delta_t) {
 
-  assert(!std::isnan(sigma_point.sum()));
 
   if (sigma_point.size() == 7) {
 
@@ -437,7 +403,6 @@ VectorXd UKF::PredictOneSigmaPoint(const VectorXd &sigma_point,
 VectorXd UKF::PredictMean(const MatrixXd &Xsig_pred) {
   // Returns:
   //     mean (1-D Array): shape (n_x,);
-  assert(!std::isnan(Xsig_pred.sum()));
   return Xsig_pred * weights_;
 }
 
@@ -464,4 +429,14 @@ MatrixXd UKF::PredictCovariance(const MatrixXd &Xsig_pred,
   MatrixXd temp = mean_subtracted * w2;
   temp.col(0) = temp.col(0) / w2 * w1;
   return temp * mean_subtracted.transpose();
+}
+
+bool UKF::is_unstable() {
+  if (!std::isfinite(x_.sum())) {
+    return true;
+  }
+  if (!std::isfinite(P_.sum())) {
+    return true;
+  }
+  return false;
 }
