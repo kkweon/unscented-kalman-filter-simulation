@@ -1,4 +1,7 @@
 * Unscented Kalman Filter
+#+CAPTION: Screen
+#+NAME: Unscented Kalman Filter
+[[assets/unscented-kalman-filter.gif]]
 ** Build
 - ~mkdir build~
 - ~cd build && cmake ..~
